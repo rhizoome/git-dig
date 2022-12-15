@@ -153,15 +153,22 @@ class Hunk:
         return cls(set(), parent, child, path, first, second, hint)
 
 
+def reducer(offset, size):
+    """Reduce the context, but not lower than two."""
+    new_size = max(2, size - 2 * _reduce_context)
+    reduction = min(0, size - new_size) // 2
+    return (offset + reduction, new_size)
+
+
 def reduce_context(hunk):
     """Ignore most of the context."""
     r = _reduce_context
-    hfirst = hunk.first
-    first = (hfirst[0] + r, hfirst[1] - r * 2)
-    hsecond = hunk.first
-    second = (hsecond[0] + r, hsecond[1] - r * 2)
+    first = reducer(*hunk.first)
+    second = reducer(*hunk.second)
     h = hunk
-    return Hunk(h.deps, h.parent, h.child, h.path, first, second, h.hint)
+    h = Hunk(h.deps, h.parent, h.child, h.path, first, second, h.hint)
+    vprint("hunk-reduction: {hunk} > {h}")
+    return h
 
 
 def parse_hunks(parent, child=None):
@@ -203,15 +210,16 @@ def find_revs(stream, hunks):
         last = line_number
         for _ in range(lines):
             line = next(reader)
-        if not line:  # TODO assert we are not skipping because of a an error
-            break
         rev, number = parse_blame_line(line)
         assert line_number == number
         hunk_size = hunk.first[1]
-        for _ in range(hunk_size):
-            line = next(reader)
-            rev, number = parse_blame_line(line)
-            hunk.deps.add(rev)
+        try:
+            for _ in range(hunk_size):
+                line = next(reader)
+                rev, number = parse_blame_line(line)
+                hunk.deps.add(rev)
+        except StopIteration:
+            pass
         last += hunk_size
 
 
