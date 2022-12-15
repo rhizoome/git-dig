@@ -15,7 +15,6 @@ from colorama import Fore, init  # type: ignore
 
 _devnull = DEVNULL
 _verbose = False
-_reduce_context = 2
 
 
 def vprint(msg):
@@ -255,8 +254,12 @@ def blame_hunks(hunks):
 
 def get_parents(base):
     """Get the parents of a commit."""
-    res = srun(["git", "rev-parse", f"{base}^@"], stdout=PIPE, check=True)
-    return [line.strip() for line in res.stdout.splitlines()]
+    try:
+        res = srun(["git", "rev-parse", f"{base}^@"], stdout=PIPE, check=True)
+        return [line.strip() for line in res.stdout.splitlines()]
+    except:
+        __import__("pdb").set_trace()
+        pass
 
 
 def dig(base, max_depth=1, depth=0, seen=None):
@@ -276,10 +279,11 @@ def dig(base, max_depth=1, depth=0, seen=None):
             depends.update(hunk.deps)
         for depend in depends:
             is_seen = depend in seen
-            print_depend(depend, depth, is_seen)
-            if not is_seen:
-                seen.add(depend)
-                dig(depend, max_depth, depth + 1, seen)
+            if not depend.startswith("^"):
+                print_depend(depend, depth, is_seen)
+                if not is_seen:
+                    seen.add(depend)
+                    dig(depend, max_depth, depth + 1, seen)
 
 
 @click.command()
