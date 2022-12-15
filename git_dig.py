@@ -84,13 +84,13 @@ def popen(*args, expect_code=0, **kwargs):
 
 
 @contextmanager
-def diff(rev=None):
+def diff(parent, child=None):
     """Get git rev."""
-    if rev is None:
-        rev = []
+    if child is None or child == "WORKING":
+        child = []
     else:
-        rev = [rev]
-    with popen(["git", "diff"] + rev, stdout=PIPE) as proc:
+        child = [child]
+    with popen(["git", "diff", parent] + child, stdout=PIPE) as proc:
         yield proc
 
 
@@ -108,17 +108,12 @@ def show(rev=None):
 @contextmanager
 def blame(rev, path):
     """Blame git rev/path."""
-    with popen(["git", "blame", "-s", rev, "--", path], stdout=PIPE) as proc:
+    if rev == "WORKING":
+        rev = []
+    else:
+        rev = [rev]
+    with popen(["git", "blame", "-s"] + rev + ["--", path], stdout=PIPE) as proc:
         yield proc
-        assert proc.wait() == 0
-
-
-def current_revision():
-    return srun(
-        ["git", "rev-parse", "HEAD"],
-        stdout=PIPE,
-        check=True,
-    ).stdout.strip()
 
 
 def print_depend(rev):
@@ -138,14 +133,15 @@ def linereader(stream):
 @dataclass(slots=True, frozen=True)
 class Hunk:
     deps: set[str]
-    rev: str
+    parent: str
+    child: str
     path: str
     first: tuple[int, int]
     second: tuple[int, int]
     hint: str
 
     @classmethod
-    def from_line(cls, rev, path, line):
+    def from_line(cls, parent, child, path, line):
         data = [data.strip() for data in line.split("@@") if data]
         first, _, second = data[0].partition(" ")
         first = tuple([int(i) for i in first[1:].split(",")])
@@ -154,24 +150,24 @@ class Hunk:
         if len(data) > 1:
             hint = data[1]
 
-        return cls(set(), rev, path, first, second, hint)
+        return cls(set(), parent, child, path, first, second, hint)
 
 
 def reduce_context(hunk):
     """Ignore most of the context."""
     r = _reduce_context
     hfirst = hunk.first
-    first = (hfirst[0] + r, hfirst[0] - r * 2)
+    first = (hfirst[0] + r, hfirst[1] - r * 2)
     hsecond = hunk.first
-    second = (hsecond[0] + r, hsecond[0] - r * 2)
+    second = (hsecond[0] + r, hsecond[1] - r * 2)
     h = hunk
-    return Hunk(h.deps, h.rev, h.path, first, second, h.hint)
+    return Hunk(h.deps, h.parent, h.child, h.path, first, second, h.hint)
 
 
-def parse_hunks(rev=None):
+def parse_hunks(parent, child=None):
     """Parse hunks in diff."""
     hunks = []
-    with diff(rev) as proc:
+    with diff(parent, child) as proc:
         reader = linereader(proc.stdout)
         try:
             # Find hunks
@@ -183,7 +179,7 @@ def parse_hunks(rev=None):
                     path = path.strip()
                 elif line.startswith("@@ -"):
                     assert path
-                    hunk = Hunk.from_line(rev, path, line)
+                    hunk = Hunk.from_line(parent, child, path, line)
                     hunks.append(hunk)
         except StopIteration:
             pass
@@ -211,7 +207,6 @@ def find_revs(stream, hunks):
             break
         rev, number = parse_blame_line(line)
         assert line_number == number
-        hunk.deps.add(rev)
         hunk_size = hunk.first[1]
         for _ in range(hunk_size):
             line = next(reader)
@@ -222,13 +217,35 @@ def find_revs(stream, hunks):
 
 def blame_hunks(hunks):
     "Blame changes described by hunks."
-    by_rev_path = defaultdict(list)
+    by_parent_path = defaultdict(list)
     for hunk in hunks:
         hunk = reduce_context(hunk)
-        by_rev_path[(hunk.rev, hunk.path)].append(hunk)
-    for rev_path in by_rev_path.keys():
+        by_parent_path[(hunk.parent, hunk.path)].append(hunk)
+    for rev_path in by_parent_path.keys():
         with blame(*rev_path) as proc:
-            find_revs(proc.stdout, by_rev_path[rev_path])
+            find_revs(proc.stdout, by_parent_path[rev_path])
+
+
+def get_parents(base):
+    """Get the parents of a commit."""
+    res = srun(["git", "rev-parse", f"{base}^@"], stdout=PIPE, check=True)
+    return [line.strip() for line in res.stdout.splitlines()]
+
+
+def dig(base):
+    """Compare all parents to the base to find all depending commits."""
+    if base == "WORKING":
+        hunks = parse_hunks("HEAD", base)
+    else:
+        hunks = []
+        for parent in get_parents(base):
+            hunks += parse_hunks(parent, base)
+    blame_hunks(hunks)
+    depends = set()
+    for hunk in hunks:
+        depends.update(hunk.deps)
+    for depend in depends:
+        print_depend(depend)
 
 
 @click.command()
@@ -238,20 +255,22 @@ def blame_hunks(hunks):
     default=False,
     help="Verbose output",
 )
-def main(verbose):
-    """Click entrypoint."""
+@click.option(
+    "--base",
+    "-b",
+    default="WORKING",
+    help="Base revision for dig (commit-ish) default: WORKING",
+)
+def main(verbose, base):
+    """Find what commits depend on a diff.
+
+    By default it compares your working copy against HEAD. If you provide a base
+    revision it will compare that revision against its parents.
+    """
     init()
     global _devnull
     global _verbose
     if verbose:
         _devnull = None
         _verbose = True
-    rev = current_revision()
-    hunks = parse_hunks(rev)
-    blame_hunks(hunks)
-    depends = set()
-    for hunk in hunks:
-        depends.update(hunk.deps)
-    for depend in depends:
-        if not rev.startswith(depend):
-            print_depend(depend)
+    dig(base)
