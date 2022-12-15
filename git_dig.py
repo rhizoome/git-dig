@@ -74,6 +74,7 @@ def show(rev=None):
         rev = [rev]
     with SPopen(["git", "show"] + rev, stdout=PIPE) as proc:
         yield proc
+        assert proc.wait() == 0
 
 
 @contextmanager
@@ -84,10 +85,15 @@ def blame(rev, path):
         stdout=PIPE,
     ) as proc:
         yield proc
+        assert proc.wait() == 0
 
 
 def current_revision():
-    return srun(["git", "rev-parse", "HEAD"], stdout=PIPE, check=True).stdout.strip()
+    return srun(
+        ["git", "rev-parse", "HEAD"],
+        stdout=PIPE,
+        check=True,
+    ).stdout.strip()
 
 
 def print_depend(rev):
@@ -142,7 +148,6 @@ def parse_hunks(rev=None):
             path = None
             while True:
                 line = next(reader)
-                print(line)
                 if line.startswith("+++ b/"):
                     _, _, path = line.partition("+++ b/")
                     path = path.strip()
@@ -174,6 +179,8 @@ def find_revs(stream, hunks):
         last = line_number
         for _ in range(lines):
             line = next(reader)
+        if not line:  # TODO assert we are not skipping because of a an error
+            break
         rev, number = parse_blame_line(line)
         assert line_number == number
         hunk.deps.add(rev)
@@ -217,5 +224,5 @@ def main(verbose):
     for hunk in hunks:
         depends.update(hunk.deps)
     for depend in depends:
-        print_depend(depend)
-    print("done")
+        if not rev.startswith(depend):
+            print_depend(depend)
