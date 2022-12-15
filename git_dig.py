@@ -91,7 +91,7 @@ def diff(parent, child=None):
         child = []
     else:
         child = [child]
-    with popen(["git", "diff", parent] + child, stdout=PIPE) as proc:
+    with popen(["git", "diff", "--unified=1", parent] + child, stdout=PIPE) as proc:
         yield proc
 
 
@@ -145,7 +145,7 @@ def parse_hunk_field(field):
     """Parse a hunk field."""
     field = [int(i) for i in field[1:].split(",")]
     if len(field) < 2:
-        field.append(0)
+        field.append(1)
         assert len(field) == 2
     return tuple(field)
 
@@ -163,6 +163,7 @@ class Hunk:
 
     @classmethod
     def from_line(cls, parent, child, path, line):
+        """Create a unk from a line."""
         data = [data.strip() for data in line.split("@@") if data]
         first, _, second = data[0].partition(" ")
         first = parse_hunk_field(first)
@@ -172,24 +173,6 @@ class Hunk:
             hint = data[1]
 
         return cls(set(), parent, child, path, first, second, hint, line)
-
-
-def reducer(offset, size):
-    """Reduce the context, but not lower than two."""
-    new_size = max(2, size - 2 * _reduce_context)
-    reduction = min(0, size - new_size) // 2
-    return (offset + reduction, new_size)
-
-
-def reduce_context(hunk):
-    """Ignore most of the context."""
-    r = _reduce_context
-    first = reducer(*hunk.first)
-    second = reducer(*hunk.second)
-    h = hunk
-    h = Hunk(h.deps, h.parent, h.child, h.path, first, second, h.hint, h.line)
-    vprint("hunk-reduction: {hunk} > {h}")
-    return h
 
 
 def parse_hunks(parent, child=None):
@@ -215,6 +198,7 @@ def parse_hunks(parent, child=None):
 
 
 def parse_blame_line(line):
+    """Parse a blame line."""
     rev, _, rest = line.partition(" ")
     number, _, _ = rest.partition(")")
     number = number.strip()
@@ -231,13 +215,15 @@ def find_revs(stream, hunks):
     line = ""
     reader = linereader(stream)
     for hunk in hunks:
-        line_number = hunk.first[0]
+        line_number = hunk.first[0] - 1
         lines = line_number - last
         last = line_number
         for _ in range(lines):
             line = next(reader)
-        if not line:
+        if not line:  # WTF??
             return
+            __import__("pdb").set_trace()
+            pass
         rev, number = parse_blame_line(line)
         assert line_number == number
         hunk_size = hunk.first[1]
@@ -246,6 +232,8 @@ def find_revs(stream, hunks):
                 line = next(reader)
                 rev, number = parse_blame_line(line)
                 hunk.deps.add(rev)
+                line_number += 1
+                assert line_number == number
         except StopIteration:
             pass
         last += hunk_size
@@ -255,14 +243,13 @@ def blame_hunks(hunks):
     "Blame changes described by hunks."
     by_parent_path = defaultdict(list)
     for hunk in hunks:
-        hunk = reduce_context(hunk)
         by_parent_path[(hunk.parent, hunk.path)].append(hunk)
     try:
         for rev_path in by_parent_path.keys():
             with blame(*rev_path) as proc:
                 find_revs(proc.stdout, by_parent_path[rev_path])
     except CalledProcessError as e:
-        if e.returncode != -13:
+        if e.returncode not in (-13, 128):
             raise
 
 
