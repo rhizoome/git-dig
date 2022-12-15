@@ -2,6 +2,7 @@
 
 
 import os
+import pty
 import sys
 from collections import defaultdict
 from contextlib import contextmanager
@@ -116,8 +117,18 @@ def blame(rev, path):
         yield proc
 
 
-def print_depend(rev):
-    srun(["git", "show", "--quiet", "--oneline"] + [rev], stdout=sys.stdout, check=True)
+def print_depend(rev, depth=0, is_seen=False):
+    indent = ""
+    if depth:
+        indent = "    " * depth
+    in_pty, out_pty = pty.openpty()
+    output = open(out_pty, "r", encoding="UTF-8")
+    srun(["git", "show", "--quiet", "--oneline"] + [rev], stdout=in_pty, check=True)
+    output.readline()
+    seen = ""
+    if is_seen:
+        seen = "(already followed)"
+    print(f"{indent}{output.readline().strip()} {seen}")
 
 
 def linereader(stream):
@@ -130,6 +141,15 @@ def linereader(stream):
         yield line
 
 
+def parse_hunk_field(field):
+    """Parse a hunk field."""
+    field = [int(i) for i in field[1:].split(",")]
+    if len(field) < 2:
+        field.append(0)
+        assert len(field) == 2
+    return tuple(field)
+
+
 @dataclass(slots=True, frozen=True)
 class Hunk:
     deps: set[str]
@@ -139,18 +159,19 @@ class Hunk:
     first: tuple[int, int]
     second: tuple[int, int]
     hint: str
+    line: str
 
     @classmethod
     def from_line(cls, parent, child, path, line):
         data = [data.strip() for data in line.split("@@") if data]
         first, _, second = data[0].partition(" ")
-        first = tuple([int(i) for i in first[1:].split(",")])
-        second = tuple([int(i) for i in second[1:].split(",")])
+        first = parse_hunk_field(first)
+        second = parse_hunk_field(second)
         hint = ""
         if len(data) > 1:
             hint = data[1]
 
-        return cls(set(), parent, child, path, first, second, hint)
+        return cls(set(), parent, child, path, first, second, hint, line)
 
 
 def reducer(offset, size):
@@ -166,7 +187,7 @@ def reduce_context(hunk):
     first = reducer(*hunk.first)
     second = reducer(*hunk.second)
     h = hunk
-    h = Hunk(h.deps, h.parent, h.child, h.path, first, second, h.hint)
+    h = Hunk(h.deps, h.parent, h.child, h.path, first, second, h.hint, h.line)
     vprint("hunk-reduction: {hunk} > {h}")
     return h
 
@@ -196,7 +217,12 @@ def parse_hunks(parent, child=None):
 def parse_blame_line(line):
     rev, _, rest = line.partition(" ")
     number, _, _ = rest.partition(")")
-    return rev, int(number)
+    number = number.strip()
+    try:
+        return rev, int(number)
+    except ValueError:
+        _, _, number = number.rpartition(" ")
+        return rev, int(number)
 
 
 def find_revs(stream, hunks):
@@ -210,6 +236,8 @@ def find_revs(stream, hunks):
         last = line_number
         for _ in range(lines):
             line = next(reader)
+        if not line:
+            return
         rev, number = parse_blame_line(line)
         assert line_number == number
         hunk_size = hunk.first[1]
@@ -229,9 +257,13 @@ def blame_hunks(hunks):
     for hunk in hunks:
         hunk = reduce_context(hunk)
         by_parent_path[(hunk.parent, hunk.path)].append(hunk)
-    for rev_path in by_parent_path.keys():
-        with blame(*rev_path) as proc:
-            find_revs(proc.stdout, by_parent_path[rev_path])
+    try:
+        for rev_path in by_parent_path.keys():
+            with blame(*rev_path) as proc:
+                find_revs(proc.stdout, by_parent_path[rev_path])
+    except CalledProcessError as e:
+        if e.returncode != -13:
+            raise
 
 
 def get_parents(base):
@@ -240,20 +272,27 @@ def get_parents(base):
     return [line.strip() for line in res.stdout.splitlines()]
 
 
-def dig(base):
+def dig(base, max_depth=1, depth=0, seen=None):
     """Compare all parents to the base to find all depending commits."""
-    if base == "WORKING":
-        hunks = parse_hunks("HEAD", base)
-    else:
-        hunks = []
-        for parent in get_parents(base):
-            hunks += parse_hunks(parent, base)
-    blame_hunks(hunks)
-    depends = set()
-    for hunk in hunks:
-        depends.update(hunk.deps)
-    for depend in depends:
-        print_depend(depend)
+    if not seen:
+        seen = set()
+    if depth < max_depth:
+        if base == "WORKING":
+            hunks = parse_hunks("HEAD", base)
+        else:
+            hunks = []
+            for parent in get_parents(base):
+                hunks += parse_hunks(parent, base)
+        blame_hunks(hunks)
+        depends = set()
+        for hunk in hunks:
+            depends.update(hunk.deps)
+        for depend in depends:
+            is_seen = depend in seen
+            print_depend(depend, depth, is_seen)
+            if not is_seen:
+                seen.add(depend)
+                dig(depend, max_depth, depth + 1, seen)
 
 
 @click.command()
@@ -269,7 +308,14 @@ def dig(base):
     default="WORKING",
     help="Base revision for dig (commit-ish) default: WORKING",
 )
-def main(verbose, base):
+@click.option(
+    "--max-depth",
+    "-m",
+    default=1,
+    type=int,
+    help="How deep to dig",
+)
+def main(verbose, base, max_depth):
     """Find what commits depend on a diff.
 
     By default it compares your working copy against HEAD. If you provide a base
@@ -281,4 +327,4 @@ def main(verbose, base):
     if verbose:
         _devnull = None
         _verbose = True
-    dig(base)
+    dig(base, max_depth)
