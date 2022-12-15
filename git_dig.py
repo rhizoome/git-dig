@@ -2,7 +2,6 @@
 
 
 import os
-import pty
 import sys
 from collections import defaultdict
 from contextlib import contextmanager
@@ -120,14 +119,15 @@ def print_depend(rev, depth=0, is_seen=False):
     indent = ""
     if depth:
         indent = "    " * depth
-    in_pty, out_pty = pty.openpty()
-    output = open(out_pty, "r", encoding="UTF-8")
-    srun(["git", "show", "--quiet", "--oneline"] + [rev], stdout=in_pty, check=True)
-    output.readline()
+    res = srun(
+        ["git", "show", "--color=always", "--quiet", "--oneline"] + [rev],
+        stdout=PIPE,
+        check=True,
+    )
     seen = ""
     if is_seen:
         seen = "(already followed)"
-    print(f"{indent}{output.readline().strip()} {seen}")
+    print(f"{indent}{res.stdout.strip()} " + Fore.GREEN + seen + Fore.RESET)
 
 
 def linereader(stream):
