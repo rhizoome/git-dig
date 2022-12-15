@@ -1,16 +1,20 @@
 """Show dependencies of a commit."""
 
+
 import os
 import sys
 from collections import defaultdict
 from contextlib import contextmanager
-from subprocess import DEVNULL, PIPE, Popen, run
+from dataclasses import dataclass
+from subprocess import DEVNULL, PIPE, CalledProcessError, Popen, run
+from typing import Any
 
 import click
-from colorama import Fore, init
+from colorama import Fore, init  # type: ignore
 
 _devnull = DEVNULL
 _verbose = False
+_reduce_context = 2
 
 
 def vprint(msg):
@@ -66,24 +70,45 @@ def srun(*args, stdout=None, stderr=None, stdin=None, **kwargs):
 
 
 @contextmanager
+def popen(*args, expect_code=0, **kwargs):
+    """Like run check but with Popen."""
+    with SPopen(*args, **kwargs) as proc:
+        yield proc
+    if proc.returncode != expect_code:
+        raise CalledProcessError(
+            proc.returncode,
+            args[0],
+            output=proc.stdout,
+            stderr=proc.stderr,
+        )
+
+
+@contextmanager
+def diff(rev=None):
+    """Get git rev."""
+    if rev is None:
+        rev = []
+    else:
+        rev = [rev]
+    with popen(["git", "diff"] + rev, stdout=PIPE) as proc:
+        yield proc
+
+
+@contextmanager
 def show(rev=None):
     """Get git rev."""
     if rev is None:
         rev = []
     else:
         rev = [rev]
-    with SPopen(["git", "show"] + rev, stdout=PIPE) as proc:
+    with popen(["git", "show"] + rev, stdout=PIPE) as proc:
         yield proc
-        assert proc.wait() == 0
 
 
 @contextmanager
 def blame(rev, path):
     """Blame git rev/path."""
-    with SPopen(
-        ["git", "blame", "-s", rev, "--", path],
-        stdout=PIPE,
-    ) as proc:
+    with popen(["git", "blame", "-s", rev, "--", path], stdout=PIPE) as proc:
         yield proc
         assert proc.wait() == 0
 
@@ -106,44 +131,49 @@ def linereader(stream):
         if not line:
             return
         line = line.strip("\n")
+        vprint(line)
         yield line
 
 
+@dataclass(slots=True, frozen=True)
 class Hunk:
-    __slots__ = ("deps", "rev", "path", "first", "second", "hint")
+    deps: set[str]
+    rev: str
+    path: str
+    first: tuple[int, int]
+    second: tuple[int, int]
+    hint: str
 
-    def __init__(self, rev, path, line):
-        self.deps = set()
-        self.rev = rev
-        self.path = path
+    @classmethod
+    def from_line(cls, rev, path, line):
         data = [data.strip() for data in line.split("@@") if data]
         first, _, second = data[0].partition(" ")
-        self.first = tuple([int(i) for i in first[1:].split(",")])
-        self.second = tuple([int(i) for i in second[1:].split(",")])
-        self.hint = ""
+        first = tuple([int(i) for i in first[1:].split(",")])
+        second = tuple([int(i) for i in second[1:].split(",")])
+        hint = ""
         if len(data) > 1:
-            self.hint = data[1]
+            hint = data[1]
 
-    def __repr__(self):
-        return f'path: "{self.path}" first: {self.first} second: {self.second}'
+        return cls(set(), rev, path, first, second, hint)
+
+
+def reduce_context(hunk):
+    """Ignore most of the context."""
+    r = _reduce_context
+    hfirst = hunk.first
+    first = (hfirst[0] + r, hfirst[0] - r * 2)
+    hsecond = hunk.first
+    second = (hsecond[0] + r, hsecond[0] - r * 2)
+    h = hunk
+    return Hunk(h.deps, h.rev, h.path, first, second, h.hint)
 
 
 def parse_hunks(rev=None):
     """Parse hunks in diff."""
     hunks = []
-    with show(rev) as proc:
+    with diff(rev) as proc:
         reader = linereader(proc.stdout)
         try:
-            # Forward to message
-            while True:
-                line = next(reader)
-                if not line:
-                    break
-            # Forward to diff
-            while True:
-                line = next(reader)
-                if not line:
-                    break
             # Find hunks
             path = None
             while True:
@@ -152,10 +182,8 @@ def parse_hunks(rev=None):
                     _, _, path = line.partition("+++ b/")
                     path = path.strip()
                 elif line.startswith("@@ -"):
-                    if not path:
-                        __import__("pdb").set_trace()
-                        pass
-                    hunk = Hunk(rev, path, line)
+                    assert path
+                    hunk = Hunk.from_line(rev, path, line)
                     hunks.append(hunk)
         except StopIteration:
             pass
@@ -196,6 +224,7 @@ def blame_hunks(hunks):
     "Blame changes described by hunks."
     by_rev_path = defaultdict(list)
     for hunk in hunks:
+        hunk = reduce_context(hunk)
         by_rev_path[(hunk.rev, hunk.path)].append(hunk)
     for rev_path in by_rev_path.keys():
         with blame(*rev_path) as proc:
