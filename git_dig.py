@@ -51,7 +51,14 @@ class SPopen(Popen):
             stderr = _devnull
         if stdin is None and "input" not in kwargs:
             stdin = _devnull
-        super().__init__(*args, stderr=stderr, stdin=stdin, encoding="UTF-8", **kwargs)
+        super().__init__(
+            *args,
+            stderr=stderr,
+            stdin=stdin,
+            encoding="UTF-8",
+            errors="backslashreplace",
+            **kwargs,
+        )
 
 
 def srun(*args, stdout=None, stderr=None, stdin=None, **kwargs):
@@ -64,7 +71,13 @@ def srun(*args, stdout=None, stderr=None, stdin=None, **kwargs):
     if stdin is None and "input" not in kwargs:
         stdin = _devnull
     return run(
-        *args, stdout=stdout, stderr=stderr, stdin=stdin, encoding="UTF-8", **kwargs
+        *args,
+        stdout=stdout,
+        stderr=stderr,
+        stdin=stdin,
+        encoding="UTF-8",
+        errors="backslashreplace",
+        **kwargs,
     )
 
 
