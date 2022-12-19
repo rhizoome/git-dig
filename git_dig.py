@@ -233,10 +233,9 @@ def find_revs(stream, hunks):
             last = line_number
             for _ in range(lines):
                 line = next(reader)
-            if not line:
-                return
-            rev, number = parse_blame_line(line)
-            assert line_number == number
+            if line:
+                rev, number = parse_blame_line(line)
+                assert line_number == number
             hunk_size = hunk.first[1]
             for _ in range(hunk_size):
                 line = next(reader)
@@ -290,7 +289,9 @@ def dig(base, max_depth=1, depth=0, seen=None):
             depends.update(hunk.deps)
         for depend in depends:
             is_seen = depend in seen
-            if not depend.startswith("^"):
+            if depend.startswith("^"):
+                print_depend(depend[1:], depth, is_seen)
+            else:
                 print_depend(depend, depth, is_seen)
                 if not is_seen:
                     seen.add(depend)
