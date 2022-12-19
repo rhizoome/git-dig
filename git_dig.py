@@ -226,29 +226,27 @@ def find_revs(stream, hunks):
     last = 0
     line = ""
     reader = linereader(stream)
-    for hunk in hunks:
-        line_number = hunk.first[0] - 1
-        lines = line_number - last
-        last = line_number
-        for _ in range(lines):
-            line = next(reader)
-        if not line:  # WTF??
-            return
-            __import__("pdb").set_trace()
-            pass
-        rev, number = parse_blame_line(line)
-        assert line_number == number
-        hunk_size = hunk.first[1]
-        try:
+    try:
+        for hunk in hunks:
+            line_number = hunk.first[0] - 1
+            lines = line_number - last
+            last = line_number
+            for _ in range(lines):
+                line = next(reader)
+            if not line:
+                return
+            rev, number = parse_blame_line(line)
+            assert line_number == number
+            hunk_size = hunk.first[1]
             for _ in range(hunk_size):
                 line = next(reader)
                 rev, number = parse_blame_line(line)
                 hunk.deps.add(rev)
                 line_number += 1
                 assert line_number == number
-        except StopIteration:
-            pass
-        last += hunk_size
+            last += hunk_size
+    except StopIteration:
+        pass
 
 
 def blame_hunks(hunks):
