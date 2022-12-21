@@ -55,6 +55,11 @@ def vprint(msg):
         print(Fore.CYAN + f"> {msg}" + Fore.RESET)
 
 
+def wprint(msg):
+    """Print a warning."""
+    print(Fore.RED + f"! {msg}" + Fore.RESET, file=sys.stderr)
+
+
 @contextmanager
 def chdir(path):
     """Contextmanager to change directory."""
@@ -254,29 +259,39 @@ def parse_blame_line(line):
         return rev, int(number)
 
 
+def get_blame_line(reader, recover, line_number):
+    line = next(reader)
+    # There are lines like this: "ac_cr='^M'", they break the parser, we try
+    # the next line and hope to recover
+    try:
+        rev, number = parse_blame_line(line)
+    except ValueError:
+        wprint(f"broken blame output: '{line}', trying to recover at next line")
+        return True, None, None
+    if recover:
+        wprint(f"recovering with line: '{line}', line_number: {number}")
+        line_number = number
+    else:
+        line_number += 1
+        assert line_number == number
+    return False, line_number, rev
+
+
 def find_revs(stream, hunks):
     """Find revisions in blame stream."""
-    last = 0
-    line = ""
+    line_number = 0
     reader = linereader(stream)
     try:
+        recover = False
         for hunk in hunks:
-            line_number = hunk.first[0] - 1
-            lines = line_number - last
-            last = line_number
+            lines = hunk.first[0] - line_number - 1
             for _ in range(lines):
-                line = next(reader)
-            if line:
-                rev, number = parse_blame_line(line)
-                assert line_number == number
+                recover, line_number, _ = get_blame_line(reader, recover, line_number)
             hunk_size = hunk.first[1]
             for _ in range(hunk_size):
-                line = next(reader)
-                rev, number = parse_blame_line(line)
-                hunk.deps.add(rev)
-                line_number += 1
-                assert line_number == number
-            last += hunk_size
+                recover, line_number, rev = get_blame_line(reader, recover, line_number)
+                if not recover:
+                    hunk.deps.add(rev)
     except StopIteration:
         pass
 
