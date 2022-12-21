@@ -4,6 +4,7 @@
 import os
 import sys
 from collections import defaultdict
+from collections.abc import MutableSet
 from contextlib import contextmanager
 from dataclasses import dataclass
 from subprocess import DEVNULL, PIPE, CalledProcessError, Popen, run
@@ -14,6 +15,38 @@ from colorama import Fore, init  # type: ignore
 
 _devnull = DEVNULL
 _verbose = False
+
+
+class OrderedSet(MutableSet):
+    def __init__(self):
+        self.data = dict()
+
+    def add(self, elem):
+        self.data[elem] = None
+
+    def discard(self, elem):
+        try:
+            self.data.pop(elem)
+        except KeyError:
+            pass
+
+    def __contains__(self, elem):
+        return self.data.__contains__(elem)
+
+    def __len__(self):
+        return self.data.__len__()
+
+    def __iter__(self):
+        keys = self.data.keys()
+
+        def iter_func():
+            for key in keys:
+                yield key
+
+        return iter_func()
+
+
+a = OrderedSet()
 
 
 def vprint(msg):
@@ -164,7 +197,7 @@ def parse_hunk_field(field):
 
 @dataclass(slots=True, frozen=True)
 class Hunk:
-    deps: set[str]
+    deps: OrderedSet[str]
     parent: str
     child: str
     path: str
@@ -184,7 +217,7 @@ class Hunk:
         if len(data) > 1:
             hint = data[1]
 
-        return cls(set(), parent, child, path, first, second, hint, line)
+        return cls(OrderedSet(), parent, child, path, first, second, hint, line)
 
 
 def parse_hunks(parent, child=None):
@@ -284,12 +317,13 @@ def dig(base, max_depth=1, depth=0, seen=None):
             for parent in get_parents(base):
                 hunks += parse_hunks(parent, base)
         blame_hunks(hunks)
-        depends = set()
+        depends = OrderedSet()
         for hunk in hunks:
-            depends.update(hunk.deps)
+            depends |= hunk.deps
         for depend in depends:
             is_seen = depend in seen
             if depend.startswith("^"):
+                seen.add(depend)
                 print_depend(depend[1:], depth, is_seen)
             else:
                 print_depend(depend, depth, is_seen)
