@@ -228,6 +228,9 @@ class Hunk:
         return cls(OrderedSet(), parent, child, path, first, second, hint, line)
 
 
+_deletion = object()
+
+
 def parse_hunks(parent, child=None):
     """Parse hunks in diff."""
     hunks = []
@@ -241,7 +244,10 @@ def parse_hunks(parent, child=None):
                 if line.startswith("+++ b/"):
                     _, _, path = line.partition("+++ b/")
                     path = path.strip()
-                elif line.startswith("@@ -"):
+                elif line.startswith("+++ /dev/null"):
+                    # Cannot dig file deletion
+                    path = _deletion
+                elif line.startswith("@@ -") and not path is _deletion:
                     assert path
                     hunk = Hunk.from_line(parent, child, path, line)
                     hunks.append(hunk)
