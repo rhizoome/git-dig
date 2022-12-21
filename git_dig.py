@@ -8,7 +8,6 @@ from collections.abc import MutableSet
 from contextlib import contextmanager
 from dataclasses import dataclass
 from subprocess import DEVNULL, PIPE, CalledProcessError, Popen, run
-from typing import Any
 
 import click
 from colorama import Fore, init  # type: ignore
@@ -167,6 +166,7 @@ def blame(rev, path):
 
 
 def print_depend(rev, depth=0, is_seen=False):
+    """Print out depend."""
     indent = ""
     if depth:
         indent = "    " * depth
@@ -182,6 +182,7 @@ def print_depend(rev, depth=0, is_seen=False):
 
 
 def linereader(stream):
+    """Read lines from stream."""
     while True:
         line = stream.readline()
         if not line:
@@ -202,6 +203,8 @@ def parse_hunk_field(field):
 
 @dataclass(slots=True, frozen=True)
 class Hunk:
+    """Defines a hunk."""
+
     deps: OrderedSet[str]
     parent: str
     child: str
@@ -260,6 +263,7 @@ def parse_blame_line(line):
 
 
 def get_blame_line(reader, recover, line_number):
+    """Get a blame line and recover from parser errors."""
     line = next(reader)
     # There are lines like this: "ac_cr='^M'", they break the parser, we try
     # the next line and hope to recover
@@ -297,7 +301,7 @@ def find_revs(stream, hunks):
 
 
 def blame_hunks(hunks):
-    "Blame changes described by hunks."
+    """Blame changes described by hunks."""
     by_parent_path = defaultdict(list)
     for hunk in hunks:
         by_parent_path[(hunk.parent, hunk.path)].append(hunk)
@@ -312,12 +316,8 @@ def blame_hunks(hunks):
 
 def get_parents(base):
     """Get the parents of a commit."""
-    try:
-        res = srun(["git", "rev-parse", f"{base}^@"], stdout=PIPE, check=True)
-        return [line.strip() for line in res.stdout.splitlines()]
-    except:
-        __import__("pdb").set_trace()
-        pass
+    res = srun(["git", "rev-parse", f"{base}^@"], stdout=PIPE, check=True)
+    return [line.strip() for line in res.stdout.splitlines()]
 
 
 def dig(base, max_depth=1, depth=0, seen=None):
